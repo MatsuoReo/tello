@@ -1,30 +1,31 @@
 # tello_controller.py
-import time  # ★追加
 import cv2
 import numpy as np
 from djitellopy import Tello
+from keyboard_state import KeyboardState  # ★追加
 
 
 class TelloController:
     """Telloの接続・映像取得・キー操作をまとめるクラス"""
 
-    def __init__(self):
+    def __init__(self, keyboard_state: KeyboardState):
         self.tello = Tello()
         self.in_flight = False
         self.frame_read = None
 
+        # キーボード状態
+        self.kb = keyboard_state
+
         # 速度状態
-        self.vx = 0  # 前後
-        self.vy = 0  # 左右
-        self.vz = 0  # 上下
-        self.yaw = 0  # 回転
+        self.vx = 0
+        self.vy = 0
+        self.vz = 0
+        self.yaw = 0
+
+        self.speed = 40
 
         # 速度の大きさ（-100〜100）
         self.speed = 40
-
-        # 「最後に移動キーが押された時刻」とタイムアウト秒
-        self.last_move_key_time = 0.0
-        self.key_release_timeout = 0.2  # 0.2秒キーイベントが無ければ停止とみなす
 
     def connect_and_start_stream(self):
         """Telloに接続して映像ストリーム開始"""
@@ -46,21 +47,16 @@ class TelloController:
 
     def handle_key(self, key):
         """
-        キー入力に応じてTelloを操作する。
-        戻り値: True を返したらメインループ終了。
+        cv2.waitKey() から渡されたキーを処理（終了・離着陸など）
+        ※移動は update_motion_from_keyboard() 側でやる
         """
-        now = time.time()
 
-        # --- キーがしばらく来ていなければ停止（ホバリング） ---
-        if self.in_flight and (now - self.last_move_key_time) > self.key_release_timeout:
-            self.vx = self.vy = self.vz = self.yaw = 0
-
-        # ===== 終了 =====
+        # 終了（zで終了）
         if key == ord('z'):
             print("Exiting loop")
             return True
 
-        # ===== 離陸・着陸 =====
+        # 離陸
         elif key == ord('t'):
             print("Takeoff requested")
             try:
@@ -71,11 +67,10 @@ class TelloController:
                 else:
                     self.tello.takeoff()
                     self.in_flight = True
-                    self.vx = self.vy = self.vz = self.yaw = 0
-                    self.last_move_key_time = now
             except Exception as e:
                 print(f"Takeoff failed: {e}")
 
+        # 着陸
         elif key == ord('g'):
             print("Land requested")
             try:
@@ -85,58 +80,48 @@ class TelloController:
             self.in_flight = False
             self.vx = self.vy = self.vz = self.yaw = 0
 
-        # ===== 移動キー：その方向の速度をセット、時刻を更新 =====
+        return False
+
+    def update_motion_from_keyboard(self):
+        """KeyboardState の状態から vx,vy,vz,yaw を更新"""
+        if not self.in_flight:
+            return
+
+        vx = vy = vz = yaw = 0
+
         # 前後
-        elif key == ord('w'):
-            print("Set: forward")
-            self.vx = self.speed
-            self.last_move_key_time = now
-        elif key == ord('s'):
-            print("Set: backward")
-            self.vx = -self.speed
-            self.last_move_key_time = now
+        if self.kb.is_pressed('w'):
+            vx += self.speed
+        if self.kb.is_pressed('s'):
+            vx -= self.speed
 
         # 左右
-        elif key == ord('a'):
-            print("Set: left")
-            self.vy = -self.speed
-            self.last_move_key_time = now
-        elif key == ord('d'):
-            print("Set: right")
-            self.vy = self.speed
-            self.last_move_key_time = now
+        if self.kb.is_pressed('d'):
+            vy += self.speed
+        if self.kb.is_pressed('a'):
+            vy -= self.speed
 
         # 上下
-        elif key == ord('r'):
-            print("Set: up")
-            self.vz = self.speed
-            self.last_move_key_time = now
-        elif key == ord('f'):
-            print("Set: down")
-            self.vz = -self.speed
-            self.last_move_key_time = now
+        if self.kb.is_pressed('r'):
+            vz += self.speed
+        if self.kb.is_pressed('f'):
+            vz -= self.speed
 
         # 回転
-        elif key == ord('e'):
-            print("Set: yaw right")
-            self.yaw = self.speed
-            self.last_move_key_time = now
-        elif key == ord('x'):
-            print("Set: yaw left")
-            self.yaw = -self.speed
-            self.last_move_key_time = now
+        if self.kb.is_pressed('e'):
+            yaw += self.speed
+        if self.kb.is_pressed('x'):
+            yaw -= self.speed
 
-        # スペースキーで即停止（タイムアウト待たずに止めたいとき）
-        elif key == ord(' '):
-            print("Stop all motion")
-            self.vx = self.vy = self.vz = self.yaw = 0
-            # あえて last_move_key_time を過去に飛ばしておく
-            self.last_move_key_time = 0.0
+        # スペースで即停止
+        if self.kb.is_pressed(' '):
+            vx = vy = vz = yaw = 0
 
-        return False  # まだ終わらない
+        # 計算結果を反映
+        self.vx, self.vy, self.vz, self.yaw = vx, vy, vz, yaw
 
     def update_motion(self):
-        """現在の速度(vx,vy,vz,yaw)をTelloに送る（毎フレーム呼ぶ）"""
+        """send_rc_control を実行（毎フレーム呼ぶ）"""
         if not self.in_flight:
             return
 
@@ -144,7 +129,7 @@ class TelloController:
             self.tello.send_rc_control(self.vx, self.vy, self.vz, self.yaw)
         except Exception as e:
             print(f"send_rc_control failed: {e}")
-
+            
     def cleanup(self):
         """ストリーム停止・緊急着陸などの後片付け"""
         try:

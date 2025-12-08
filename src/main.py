@@ -3,10 +3,12 @@ import time
 import cv2
 from tello_controller import TelloController
 from aruco_detector import ArUcoDetector
+from keyboard_state import KeyboardState
 
 
 def main():
-    controller = TelloController()
+    kb = KeyboardState()
+    controller = TelloController(kb)
     detector = ArUcoDetector()
 
     controller.connect_and_start_stream()
@@ -27,7 +29,8 @@ def main():
         if controller.handle_key(key):
             break
 
-        # ★ここが重要：毎フレーム速度コマンドを送る
+        # ここで「今押されているキー」から速度を決める
+        controller.update_motion_from_keyboard()
         controller.update_motion()
 
         # 送信頻度を落としすぎない程度のスリープ（だいたい20Hz）
