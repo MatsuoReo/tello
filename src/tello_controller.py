@@ -22,10 +22,7 @@ class TelloController:
         self.vz = 0
         self.yaw = 0
 
-        self.speed = 40
-
-        # 速度の大きさ（-100〜100）
-        self.speed = 40
+        self.speed = 80
 
     def connect_and_start_stream(self):
         """Telloに接続して映像ストリーム開始"""
