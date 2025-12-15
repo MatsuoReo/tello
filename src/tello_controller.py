@@ -23,6 +23,7 @@ class TelloController:
         self.yaw = 0
 
         self.speed = 80
+        self.brake_ratio = 0.6
 
     def connect_and_start_stream(self):
         """Telloに接続して映像ストリーム開始"""
@@ -82,42 +83,45 @@ class TelloController:
         return False
 
     def update_motion_from_keyboard(self):
-        """KeyboardState の状態から vx,vy,vz,yaw を更新"""
         if not self.in_flight:
             return
 
         vx = vy = vz = yaw = 0
 
+        speed = self.speed
+        if self.kb.is_pressed('shift'):
+            speed = self.speed // 2  # 精密モード（80→40など）
+
         # 前後
         if self.kb.is_pressed('d'):
-            vx += self.speed
+            vx += speed
         if self.kb.is_pressed('a'):
-            vx -= self.speed
+            vx -= speed
 
         # 左右
         if self.kb.is_pressed('w'):
-            vy += self.speed
+            vy += speed
         if self.kb.is_pressed('s'):
-            vy -= self.speed
+            vy -= speed
 
         # 上下
         if self.kb.is_pressed('r'):
-            vz += self.speed
+            vz += speed
         if self.kb.is_pressed('f'):
-            vz -= self.speed
+            vz -= speed
 
         # 回転
         if self.kb.is_pressed('e'):
-            yaw += self.speed
+            yaw += speed
         if self.kb.is_pressed('q'):
-            yaw -= self.speed
+            yaw -= speed
 
         # スペースで即停止
-        if self.kb.is_pressed(' '):
+        if self.kb.is_pressed('space'):
             vx = vy = vz = yaw = 0
 
-        # 計算結果を反映
         self.vx, self.vy, self.vz, self.yaw = vx, vy, vz, yaw
+
 
     def update_motion(self):
         """send_rc_control を実行（毎フレーム呼ぶ）"""

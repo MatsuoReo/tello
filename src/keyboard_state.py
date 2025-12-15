@@ -9,33 +9,40 @@ class KeyboardState:
 
         # リスナーを開始（別スレッドで動く）
         self.listener = keyboard.Listener(
-            on_press=self.on_press,
-            on_release=self.on_release
+            on_press=self._on_press,
+            on_release=self._on_release
         )
         self.listener.start()
 
-    def on_press(self, key):
-        try:
-            ch = key.char  # 普通のキー（'w', 'a', ' ' など）
-        except AttributeError:
-            # 特殊キー（space, esc など）はここに来る
-            if key == keyboard.Key.space:
-                ch = ' '
-            else:
-                return  # それ以外は無視でもOK
-        self.pressed.add(ch)
+    def _on_press(self, key):
+        # 1. 通常の文字キー（w, a, s, d など）
+        if isinstance(key, keyboard.KeyCode):
+            if key.char is not None:
+                ch = key.char.lower()          # ★ 常に小文字にそろえる
+                self.pressed.add(ch)
+            return
 
-    def on_release(self, key):
-        try:
-            ch = key.char
-        except AttributeError:
-            if key == keyboard.Key.space:
-                ch = ' '
-            else:
-                return
-        if ch in self.pressed:
-            self.pressed.remove(ch)
+        # 2. 特殊キー（Shift, Space など）
+        #    好きな名前で登録しておく
+        if key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
+            self.pressed.add("shift")
+        elif key == keyboard.Key.space:
+            self.pressed.add("space")
 
-    def is_pressed(self, ch: str) -> bool:
-        """指定したキー(例: 'w')が押されているかどうか"""
-        return ch in self.pressed
+    def _on_release(self, key):
+        # 1. 文字キー
+        if isinstance(key, keyboard.KeyCode):
+            if key.char is not None:
+                ch = key.char.lower()          # ★ ここも小文字に
+                self.pressed.discard(ch)
+            return
+
+        # 2. 特殊キー
+        if key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
+            self.pressed.discard("shift")
+        elif key == keyboard.Key.space:
+            self.pressed.discard("space")
+
+    def is_pressed(self, name: str) -> bool:
+        """name は 'w', 'a', 'shift', 'space' など"""
+        return name in self.pressed
