@@ -57,7 +57,8 @@ def main():
 
     while True:
         # ===== 接続できているかの簡易判定 =====
-        connected = getattr(controller, "frame_read", None) is not None
+        # frame_read ではなく tello の存在で判定（stateだけ先に来るケースを拾う）
+        connected = getattr(controller, "tello", None) is not None
 
         # ===== Tello からフレーム取得 =====
         frame = None
@@ -91,25 +92,26 @@ def main():
         except Exception:
             pass
 
-        # ===== センサーデータ（未接続時はダミー値） =====
-        if not connected:
-            yaw = 0
-            pitch = 0
-            roll = 0
-            height = 0
-            battery = 79
+        # ===== センサーデータ =====
+        # ここでは「サンプル値」ではなく、取れない時は None にする（UI側で -- 表示にできる）
+        yaw = pitch = roll = None
+        height = None
+        battery = None
+        speed = None
+        agx = agy = agz = None
+        temp = None
+        flight_time = None
 
-            # 追加：速度（UIのSPDに渡す）
-            speed = 0
-        else:
+        if connected:
             t = controller.tello
 
-            yaw = safe_call(t.get_yaw, 0)
-            pitch = safe_call(t.get_pitch, 0)
-            roll = safe_call(t.get_roll, 0)
+            # 姿勢・高度・バッテリー（API）
+            yaw = safe_call(t.get_yaw, None)
+            pitch = safe_call(t.get_pitch, None)
+            roll = safe_call(t.get_roll, None)
 
-            height = safe_call(t.get_height, 0)
-            battery = safe_call(t.get_battery, 100)
+            height = safe_call(t.get_height, None)
+            battery = safe_call(t.get_battery, None)
 
             # 高度の変化量を積分（通信ありのときだけ更新）
             if height is not None:
@@ -120,19 +122,38 @@ def main():
                         pass
                 prev_height = height
 
-            # 追加：速度
-            # djitellopy だと get_speed_x/y/z があることが多い
-            sx = safe_call(getattr(t, "get_speed_x"), None) if hasattr(t, "get_speed_x") else None
-            sy = safe_call(getattr(t, "get_speed_y"), None) if hasattr(t, "get_speed_y") else None
-            sz = safe_call(getattr(t, "get_speed_z"), None) if hasattr(t, "get_speed_z") else None
+            # --- ここが重要：Telloが送ってくる state から読む（ACC/TEMP/TIME/速度） ---
+            st = safe_call(t.get_current_state, {})
 
-            if sx is not None and sy is not None and sz is not None:
-                try:
-                    speed = (float(sx) ** 2 + float(sy) ** 2 + float(sz) ** 2) ** 0.5
-                except Exception:
-                    speed = None
-            else:
-                # 取れない環境向け：NoneにしてUI側で "--" 表示にしてもOK
+            # ACC: agx/agy/agz
+            try:
+                agx = int(float(st.get("agx", 0)))
+                agy = int(float(st.get("agy", 0)))
+                agz = int(float(st.get("agz", 0)))
+            except Exception:
+                agx = agy = agz = None
+
+            # TEMP: templ/temph の平均
+            try:
+                templ = float(st.get("templ", 0))
+                temph = float(st.get("temph", 0))
+                temp = (templ + temph) / 2.0
+            except Exception:
+                temp = None
+
+            # TIME: time（秒）
+            try:
+                flight_time = int(float(st.get("time", 0)))
+            except Exception:
+                flight_time = None
+
+            # SPEED: vgx/vgy/vgz (cm/s) の合成
+            try:
+                vgx = float(st.get("vgx", 0))
+                vgy = float(st.get("vgy", 0))
+                vgz = float(st.get("vgz", 0))
+                speed = (vgx * vgx + vgy * vgy + vgz * vgz) ** 0.5
+            except Exception:
                 speed = None
 
         # ===== UI描画 =====
@@ -144,7 +165,12 @@ def main():
             yaw=yaw,
             height=height,
             total_alt=total_alt,
-            speed=speed,   # ←追加
+            speed=speed,
+
+            # ★追加：ACC / TEMP / TIME を渡す
+            agx=agx, agy=agy, agz=agz,
+            temp=temp,
+            flight_time=flight_time,
         )
 
         # ===== 画面表示 =====
