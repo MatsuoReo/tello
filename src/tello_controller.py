@@ -28,7 +28,7 @@ class TelloController:
         # ★オートランディング用：高さ→前進距離の比例係数 d = k * h
         #   cキーでキャリブレーションして中身を決める
         self.k_forward_per_height = None      # None の間はオートランディング不可
-        self.calib_distance_cm = 300          # 基準高さで「この距離だけ前に進めばよい」(3m)
+        self.calib_distance_cm = 420          # 基準高さで「この距離だけ前に進めばよい」(3m)
 
     # --------------------------------------------------------
     # 接続・映像
@@ -157,7 +157,7 @@ class TelloController:
         d = self.k_forward_per_height * float(h)
 
         # 安全のため距離を制限（例: 20〜500cm）
-        d_clamped = int(max(20, min(d, 500)))
+        d_clamped = int(max(20, min(d, 1000)))
 
         print(f"[AUTO-LAND] height={h}cm → move_forward ≈ {d:.1f}cm (clamped to {d_clamped}cm)")
 
