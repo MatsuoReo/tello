@@ -153,3 +153,51 @@ def bar(img, x, y, w, h, ratio):
     fh = int(h * r)
     if fh > 0:
         cv2.rectangle(img, (x, y + (h - fh)), (x + w, y + h), BAR_FILL, -1)
+
+
+def draw_position_map(
+    img,
+    x,
+    y,
+    w,
+    h,
+    pos_xy,
+    *,
+    max_range=3.0,
+    alpha=0.16,
+    label=None,
+):
+    """シンプルな位置インジケーター。Xは左右、Yは上から下方向に進む。"""
+    blend_rect(img, x, y, x + w, y + h, alpha=alpha)
+    cv2.rectangle(img, (x, y), (x + w, y + h), BAR_BORDER, 1, cv2.LINE_AA)
+
+    cx = x + w // 2
+    top = y + 8
+    bot = y + h - 8
+
+    # ガイドライン（縦線とスタートライン）
+    cv2.line(img, (cx, top), (cx, bot), TICK, 1, cv2.LINE_AA)
+    cv2.line(img, (x + 6, top), (x + w - 6, top), TICK, 1, cv2.LINE_AA)
+
+    # 位置をスケールしてプロット（Yは上が初期位置）
+    px, py = pos_xy if pos_xy is not None else (0.0, 0.0)
+    try:
+        px = float(px)
+        py = float(py)
+    except Exception:
+        px = py = 0.0
+
+    px = max(-max_range, min(max_range, px))
+    py = max(-max_range, min(max_range, py))
+
+    scale_x = (w * 0.46) / max_range
+    scale_y = (h * 0.78) / max_range
+
+    dot_x = int(cx + px * scale_x)
+    dot_y = int(top + py * scale_y)
+
+    cv2.circle(img, (dot_x, dot_y), 5, PURPLE, -1, cv2.LINE_AA)
+    cv2.circle(img, (dot_x, dot_y), 7, OUTLINE, 1, cv2.LINE_AA)
+
+    if label:
+        put_outline(img, label, (x + 6, y + h - 6), 0.42, TEXT, thickness=1, outline=2)

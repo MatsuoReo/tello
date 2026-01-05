@@ -3,6 +3,7 @@ import time
 import cv2
 import numpy as np
 import threading
+from cv2 import aruco
 
 from tello_controller import TelloController
 from aruco_detector import ArUcoDetector
@@ -27,6 +28,23 @@ def main():
     detector = ArUcoDetector()
     ui = DroneUI(panel_width=260, bottom_margin=60)
 
+    # ArUco用（簡易パイプラインで使い回し）
+    try:
+        aruco_params = aruco.DetectorParameters()
+    except AttributeError:
+        aruco_params = aruco.DetectorParameters_create()
+    # 小さいマーカー向けに少し緩め＋コーナー精錬
+    aruco_params.adaptiveThreshWinSizeMin = 3
+    aruco_params.adaptiveThreshWinSizeMax = 53
+    aruco_params.adaptiveThreshWinSizeStep = 4
+    aruco_params.minMarkerPerimeterRate = 0.02
+    aruco_params.maxMarkerPerimeterRate = 5.0
+    try:
+        aruco_params.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
+    except Exception:
+        pass
+    aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+
     # 先にUIを出したいので、接続は別スレッドで開始（ここで待たない）
     threading.Thread(target=controller.connect_and_start_stream, daemon=True).start()
 
@@ -41,6 +59,13 @@ def main():
     prev_height = None
     total_alt = 0.0
     aruno_id = None
+    aruno_last = None
+    # 簡易位置推定（加速度積分）
+    # 画面上でやや左寄りに初期位置を置く（X<0で左）
+    pos_xy = np.array([-1.8, 0.5], dtype=float)
+    vel_xy = np.array([0.0, 0.0], dtype=float)
+    POS_MAX_RANGE = 3.0  # UI上の表示範囲（+-m相当）
+    prev_time = time.perf_counter()
 
     # ===== 表示管理（ウィンドウ実サイズ追従 + 余白黒埋め + UI幅自動）=====
     dm = DisplayManager(
@@ -57,9 +82,15 @@ def main():
     blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
     frame_count = 0
+    webcam = None
+    using_webcam = False
+    webcam_fail_logged = False
 
     while True:
         frame_count += 1
+        now = time.perf_counter()
+        dt = max(1e-3, now - prev_time)
+        prev_time = now
 
         # ===== 実ウィンドウサイズに追従 =====
         DISPLAY_W, DISPLAY_H, UI_W = dm.update()
@@ -70,29 +101,107 @@ def main():
             blank_frame = np.zeros((DISPLAY_H, left_w, 3), dtype=np.uint8)
 
         # ===== 接続できているかの簡易判定 =====
-        connected = getattr(controller, "tello", None) is not None
+        connected = getattr(controller, "frame_read", None) is not None
+        using_webcam = False
 
         # ===== Tello からフレーム取得 =====
         frame = None
         if connected:
             frame = safe_call(controller.get_frame, None)
 
+        # ===== Tello未接続時はPCカメラにフォールバック =====
+        if frame is None or frame.size == 0:
+            using_webcam = False
+            # 開いてなければオープンを試す（失敗は一度だけログ）
+            if webcam is None:
+                try:
+                    cam = cv2.VideoCapture(0)
+                    if cam.isOpened():
+                        webcam = cam
+                        webcam_fail_logged = False
+                        print("[INFO] Using PC camera fallback (Tello not connected).")
+                    else:
+                        cam.release()
+                        if not webcam_fail_logged:
+                            print("[WARN] PC camera not available.")
+                            webcam_fail_logged = True
+                except Exception:
+                    if not webcam_fail_logged:
+                        print("[WARN] PC camera open failed.")
+                        webcam_fail_logged = True
+                    webcam = None
+            if webcam is not None:
+                ret, cam_frame = webcam.read()
+                if ret and cam_frame is not None:
+                    frame = cam_frame
+                    using_webcam = True
+                else:
+                    # 読み取り失敗時は閉じて再トライ可能にする
+                    webcam.release()
+                    webcam = None
+
         if frame is None:
             frame = blank_frame.copy()
 
-        # ===== ArUco 検出（軽量化：2フレームに1回）=====
+        # ===== ArUco 検出 =====
         try:
-            if frame_count % 2 == 0:
-                frame, ids, corners = detector.process(frame, draw=True, draw_id=False)
-                if ids is not None and len(ids) > 0:
+            ids = None
+            corners = None
+
+            # OpenCV が扱いやすいよう連続化
+            frame = np.ascontiguousarray(frame)
+
+            def detect_simple(img):
+                """
+                tello_aruco と同等のシンプル検出（BGR → GRAY）。
+                """
+                def _run_detect(src):
                     try:
-                        aruno_id = int(ids.flatten()[0])
-                    except Exception:
-                        aruno_id = None
-                else:
+                        return aruco.detectMarkers(src, aruco_dict, parameters=aruco_params)
+                    except AttributeError:
+                        if hasattr(aruco, "ArucoDetector"):
+                            try:
+                                ad = aruco.ArucoDetector(aruco_dict, aruco_params)
+                                return ad.detectMarkers(src)
+                            except Exception:
+                                pass
+                        return (None, None, None)
+
+                c, i, _ = _run_detect(img)
+                if i is not None and len(i) > 0:
+                    return c, i
+
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                c, i, _ = _run_detect(gray)
+                if i is not None and len(i) > 0:
+                    return c, i
+                return None, None
+
+            corners, ids = detect_simple(frame)
+
+            if ids is not None and len(ids) > 0:
+                try:
+                    aruco.drawDetectedMarkers(frame, corners, ids)
+                except Exception:
+                    frame = np.ascontiguousarray(frame)
+                    aruco.drawDetectedMarkers(frame, corners, ids)
+                try:
+                    aruno_id = int(ids.flatten()[0])
+                    aruno_last = aruno_id
+                except Exception:
                     aruno_id = None
-        except Exception:
-            pass
+            else:
+                aruno_id = None
+
+            if frame_count % 30 == 0:
+                label = "webcam" if using_webcam else "tello"
+                print(f"[DEBUG {label}] ArUco ids: {ids.flatten().tolist() if ids is not None else None}")
+                if aruno_last is not None:
+                    print(f"[INFO] last detected id: {aruno_last}")
+        except Exception as e:
+            if frame_count % 60 == 0:
+                print(f"[WARN] ArUco detect failed: {e}")
+
 
         # ===== センサーデータ =====
         yaw = pitch = roll = None
@@ -150,6 +259,19 @@ def main():
             except Exception:
                 speed = None
 
+            # 加速度から位置を簡易積分（XYのみ）
+            if agx is not None and agy is not None:
+                try:
+                    ax = float(agx) * 0.01  # cm/s^2 -> m/s^2 相当
+                    ay = float(agy) * 0.01
+                    vel_xy[0] += ax * dt
+                    vel_xy[1] += ay * dt
+                    vel_xy *= 0.985  # 簡易減衰でドリフト抑制
+                    pos_xy += vel_xy * dt
+                    pos_xy = np.clip(pos_xy, -POS_MAX_RANGE, POS_MAX_RANGE)
+                except Exception:
+                    pass
+
         # ===== UI合成（右側パネル方式にするなら compose_side を使う）=====
         # ui_overlay がすでに ui_components/drone_ui を使っている前提なら compose_side が生えてるはず
         out = ui.compose_side(
@@ -167,8 +289,11 @@ def main():
             speed=speed,
             agx=agx, agy=agy, agz=agz,
             aruno=aruno_id,
+            aruno_last=aruno_last,
             temp=temp,
             flight_time=flight_time,
+            pos_xy=pos_xy,
+            pos_range=POS_MAX_RANGE,
         )
 
         # ===== “ちょい余白”対策：ウィンドウ実サイズに黒埋めで完全一致 =====
@@ -200,6 +325,11 @@ def main():
         controller.cleanup()
     except Exception:
         pass
+    if webcam is not None:
+        try:
+            webcam.release()
+        except Exception:
+            pass
     cv2.destroyAllWindows()
 
 

@@ -29,6 +29,7 @@ from .widgets import (
     put_outline,
     neon_gauge,
     bar,
+    draw_position_map,
 )
 
 
@@ -77,6 +78,7 @@ class DroneUI:
         canvas,
         *,
         aruno=None,
+        aruno_last=None,
         temp=None,
         flight_time=None,
         wifi=None,
@@ -87,7 +89,7 @@ class DroneUI:
         ts = self.text_scale
 
         # 左上 ArUco（ArUno）
-        aruno_text = f"ArUno: {aruno if aruno is not None else '--'}"
+        aruno_text = f"ArUno: {aruno if aruno is not None else '--'}  last:{aruno_last if aruno_last is not None else '--'}"
         boxed_text(
             canvas,
             aruno_text,
@@ -186,6 +188,8 @@ class DroneUI:
         total_alt=None,
         agx=None, agy=None, agz=None,
         speed=None,
+        pos_xy=None,
+        pos_range=3.0,
     ):
         h, w, _ = canvas.shape
         s = _calc_s(w)
@@ -241,18 +245,19 @@ class DroneUI:
         gauge_to_bar_gap = int(GAUGE_TO_BAR_GAP * s)
         bar_top = block_y0 + block_h + gauge_to_bar_gap
 
-        bar_gap = int(BAR_GAP * s)
-        bar_w = (w - 2 * margin - 2 * bar_gap) // 3
-        bar_w = int(max(BAR_MIN_W, bar_w))
+        # バーを圧縮しつつ少しだけ余裕を追加して左寄せ配置
+        bar_gap = int(BAR_GAP * s * 0.25)
+        base_bar_w = (w - 2 * margin - 2 * bar_gap) // 3
+        bar_w = int(max(BAR_MIN_W, base_bar_w * 0.40))
 
         label_space = int(BAR_LABEL_SPACE * s)
         bar_h_max = h - (bar_top + label_space + int(BAR_BOTTOM_PAD * s))
         bar_h = int(max(BAR_MIN_H, min(int(h * BAR_H_RATIO), bar_h_max)))
 
-        right_edge = w - margin
-        bx3 = right_edge - bar_w
-        bx2 = bx3 - bar_gap - bar_w
-        bx1 = bx2 - bar_gap - bar_w
+        left_edge = margin
+        bx1 = left_edge
+        bx2 = bx1 + bar_w + bar_gap
+        bx3 = bx2 + bar_w + bar_gap
 
         alt_ratio = None if height is None else max(0.0, min(1.0, float(height) / 300.0))
         spd_ratio = None if speed is None else max(0.0, min(1.0, float(speed) / 100.0))
@@ -261,6 +266,30 @@ class DroneUI:
         bar(canvas, bx1, bar_top, bar_w, bar_h, alt_ratio)
         bar(canvas, bx2, bar_top, bar_w, bar_h, spd_ratio)
         bar(canvas, bx3, bar_top, bar_w, bar_h, bat_ratio)
+
+        # ===== 位置インジケーター（バー右の空きスペース活用）=====
+        map_x0 = bx3 + bar_w + bar_gap
+        map_w = w - margin - map_x0
+        if map_w < 50:
+            map_w = max(50, int(bar_w * 1.1))
+            map_x0 = w - margin - map_w
+        map_h = bar_h
+        pos_label = None
+        if pos_xy is not None:
+            try:
+                pos_label = f"X:{float(pos_xy[0]):+.2f}  Y:{float(pos_xy[1]):+.2f}"
+            except Exception:
+                pos_label = None
+        draw_position_map(
+            canvas,
+            map_x0,
+            bar_top,
+            map_w,
+            map_h,
+            pos_xy,
+            max_range=max(pos_range, 0.1),
+            label=pos_label,
+        )
 
         # ===== バーラベル（改行）=====
         label_scale = BAR_LABEL_SCALE * s * ts
@@ -300,10 +329,13 @@ class DroneUI:
         height=None,
         total_alt=None,
         aruno=None,
+        aruno_last=None,
         temp=None,
         flight_time=None,
         agx=None, agy=None, agz=None,
         speed=None,
+        pos_xy=None,
+        pos_range=3.0,
         wifi=None,
         commands=None,
         layout="side",
@@ -315,19 +347,21 @@ class DroneUI:
         if layout == "overlay":
             canvas = frame.copy()
             self._render_hud_left(
-                canvas,
-                aruno=aruno,
-                temp=temp,
-                flight_time=flight_time,
-                wifi=wifi,
-                commands=commands,
-            )
+            canvas,
+            aruno=aruno,
+            aruno_last=aruno_last,
+            temp=temp,
+            flight_time=flight_time,
+            wifi=wifi,
+            commands=commands,
+        )
             return canvas
 
         left = frame.copy()
         self._render_hud_left(
             left,
             aruno=aruno,
+            aruno_last=aruno_last,
             temp=temp,
             flight_time=flight_time,
             wifi=wifi,
@@ -347,6 +381,8 @@ class DroneUI:
             total_alt=total_alt,
             agx=agx, agy=agy, agz=agz,
             speed=speed,
+            pos_xy=pos_xy,
+            pos_range=pos_range,
         )
 
         return np.hstack([left, panel])
