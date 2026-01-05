@@ -1,7 +1,17 @@
 # ui_components/widgets.py
 import cv2
 import numpy as np
-from .style import PANEL, OUTLINE, CYAN, PURPLE, TICK, TEXT
+from .style import (
+    PANEL,
+    OUTLINE,
+    CYAN,
+    PURPLE,
+    TICK,
+    TEXT,
+    BAR_BASE,
+    BAR_BORDER,
+    BAR_FILL,
+)
 
 
 def blend_rect(img, x1, y1, x2, y2, alpha=0.32):
@@ -132,8 +142,9 @@ def neon_gauge(img, center, r, value, vmin, vmax, label_text, show_value=True, t
 
 
 def bar(img, x, y, w, h, ratio):
-    cv2.rectangle(img, (x, y), (x + w, y + h), (230, 230, 230), -1)
-    cv2.rectangle(img, (x, y), (x + w, y + h), (160, 160, 160), 1)
+    # ベースと枠をグレーで塗り、充填部分もグレー系に寄せる
+    cv2.rectangle(img, (x, y), (x + w, y + h), BAR_BASE, -1)
+    cv2.rectangle(img, (x, y), (x + w, y + h), BAR_BORDER, 1)
 
     if ratio is None:
         return
@@ -141,4 +152,4 @@ def bar(img, x, y, w, h, ratio):
     r = max(0.0, min(1.0, r))
     fh = int(h * r)
     if fh > 0:
-        cv2.rectangle(img, (x, y + (h - fh)), (x + w, y + h), (0, 0, 0), -1)
+        cv2.rectangle(img, (x, y + (h - fh)), (x + w, y + h), BAR_FILL, -1)
