@@ -68,7 +68,13 @@ def main():
     POS_RANGE_X = 7.5  # UI上の表示範囲（左右, +-m相当）: 幅15m
     POS_RANGE_Y = 15.0  # UI上の表示範囲（上下, +-m相当）: 高さ30m
     prev_time = time.perf_counter()
-    ACCEL_DEADZONE = 0.05  # m/s^2 未満は停止扱い
+    ACCEL_DEADZONE = 0.09  # m/s^2 未満は停止扱い
+    awaiting_data_reset = False
+    data_ready = True
+    data_change_count = 0
+    last_data_sig = None
+    command_sent_since_takeoff = False
+    prev_in_flight = controller.in_flight
 
     # ===== 表示管理（ウィンドウ実サイズ追従 + 余白黒埋め + UI幅自動）=====
     dm = DisplayManager(
@@ -92,6 +98,12 @@ def main():
         now = time.perf_counter()
         dt = max(1e-3, now - prev_time)
         prev_time = now
+        if controller.in_flight and not prev_in_flight:
+            awaiting_data_reset = True
+            data_ready = False
+            data_change_count = 0
+            last_data_sig = None
+            command_sent_since_takeoff = False
 
         # ===== 実ウィンドウサイズに追従 =====
         DISPLAY_W, DISPLAY_H, UI_W = dm.update()
@@ -216,6 +228,20 @@ def main():
             except Exception:
                 agx = agy = agz = None
 
+            if awaiting_data_reset:
+                data_sig = (agx, agy, agz, yaw, height, flight_time)
+                if last_data_sig is None:
+                    last_data_sig = data_sig
+                elif data_sig != last_data_sig:
+                    data_change_count += 1
+                    last_data_sig = data_sig
+
+                if data_change_count >= 30 and command_sent_since_takeoff:
+                    pos_xy[:] = 0.0
+                    vel_xy[:] = 0.0
+                    awaiting_data_reset = False
+                    data_ready = True
+
             try:
                 templ = float(st.get("templ", 0))
                 temph = float(st.get("temph", 0))
@@ -237,7 +263,7 @@ def main():
                 speed = None
 
             # 加速度から位置を簡易積分（XYのみ）
-            if agx is not None and agy is not None:
+            if agx is not None and agy is not None and data_ready:
                 try:
                     # agx: 前後, agy: 左右（機体座標）を想定してヨーで回転
                     ax_body = float(agx) * 0.01  # cm/s^2 -> m/s^2 相当
@@ -307,9 +333,14 @@ def main():
         if controller.in_flight:
             try:
                 controller.update_motion_from_keyboard()
+                if not command_sent_since_takeoff:
+                    if any(abs(v) > 0 for v in (controller.vx, controller.vy, controller.vz, controller.yaw)):
+                        command_sent_since_takeoff = True
                 controller.update_motion()
             except Exception:
                 pass
+
+        prev_in_flight = controller.in_flight
 
         time.sleep(0.03)
 
