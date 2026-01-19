@@ -164,6 +164,7 @@ def draw_position_map(
     pos_xy,
     *,
     max_range=3.0,
+    yaw_deg=None,
     alpha=0.16,
     label=None,
 ):
@@ -187,17 +188,49 @@ def draw_position_map(
     except Exception:
         px = py = 0.0
 
-    px = max(-max_range, min(max_range, px))
-    py = max(-max_range, min(max_range, py))
+    try:
+        if isinstance(max_range, (list, tuple)) and len(max_range) == 2:
+            range_x = float(max_range[0])
+            range_y = float(max_range[1])
+        else:
+            r = float(max_range)
+            range_x = r
+            range_y = r
+    except Exception:
+        range_x = 3.0
+        range_y = 3.0
 
-    scale_x = (w * 0.46) / max_range
-    scale_y = (h * 0.78) / max_range
+    range_x = max(range_x, 0.1)
+    range_y = max(range_y, 0.1)
+
+    px = max(-range_x, min(range_x, px))
+    py = max(-range_y, min(range_y, py))
+
+    scale_x = (w * 0.46) / range_x
+    scale_y = (h * 0.78) / range_y
 
     dot_x = int(cx + px * scale_x)
     dot_y = int(top + py * scale_y)
 
     cv2.circle(img, (dot_x, dot_y), 5, PURPLE, -1, cv2.LINE_AA)
     cv2.circle(img, (dot_x, dot_y), 7, OUTLINE, 1, cv2.LINE_AA)
+    if yaw_deg is not None:
+        try:
+            angle = np.deg2rad(float(yaw_deg))
+            arrow_len = max(10, int(min(w, h) * 0.08))
+            dx = int(np.sin(angle) * arrow_len)
+            dy = int(np.cos(angle) * arrow_len)
+            cv2.arrowedLine(
+                img,
+                (dot_x, dot_y),
+                (dot_x + dx, dot_y + dy),
+                PURPLE,
+                2,
+                cv2.LINE_AA,
+                tipLength=0.4,
+            )
+        except Exception:
+            pass
 
     if label:
         put_outline(img, label, (x + 6, y + h - 6), 0.42, TEXT, thickness=1, outline=2)

@@ -280,6 +280,14 @@ class DroneUI:
                 pos_label = f"X:{float(pos_xy[0]):+.2f}  Y:{float(pos_xy[1]):+.2f}"
             except Exception:
                 pos_label = None
+        try:
+            if isinstance(pos_range, (list, tuple)) and len(pos_range) == 2:
+                pos_range_arg = pos_range
+            else:
+                pos_range_arg = max(float(pos_range), 0.1)
+        except Exception:
+            pos_range_arg = 3.0
+
         draw_position_map(
             canvas,
             map_x0,
@@ -287,7 +295,8 @@ class DroneUI:
             map_w,
             map_h,
             pos_xy,
-            max_range=max(pos_range, 0.1),
+            max_range=pos_range_arg,
+            yaw_deg=yaw,
             label=pos_label,
         )
 

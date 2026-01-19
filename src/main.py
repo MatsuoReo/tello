@@ -65,8 +65,10 @@ def main():
     # 画面上でやや左寄りに初期位置を置く（X<0で左）
     pos_xy = np.array([-1.8, 0.5], dtype=float)
     vel_xy = np.array([0.0, 0.0], dtype=float)
-    POS_MAX_RANGE = 3.0  # UI上の表示範囲（+-m相当）
+    POS_RANGE_X = 7.5  # UI上の表示範囲（左右, +-m相当）: 幅15m
+    POS_RANGE_Y = 15.0  # UI上の表示範囲（上下, +-m相当）: 高さ30m
     prev_time = time.perf_counter()
+    ACCEL_DEADZONE = 0.05  # m/s^2 未満は停止扱い
 
     # ===== 表示管理（ウィンドウ実サイズ追従 + 余白黒埋め + UI幅自動）=====
     dm = DisplayManager(
@@ -186,6 +188,11 @@ def main():
             t = controller.tello
 
             yaw = safe_call(t.get_yaw, None)
+            if yaw is not None:
+                try:
+                    yaw = -float(yaw)
+                except Exception:
+                    pass
             pitch = safe_call(t.get_pitch, None)
             roll = safe_call(t.get_roll, None)
 
@@ -232,13 +239,27 @@ def main():
             # 加速度から位置を簡易積分（XYのみ）
             if agx is not None and agy is not None:
                 try:
-                    ax = float(agx) * 0.01  # cm/s^2 -> m/s^2 相当
-                    ay = float(agy) * 0.01
-                    vel_xy[0] += ax * dt
-                    vel_xy[1] += ay * dt
-                    vel_xy *= 0.985  # 簡易減衰でドリフト抑制
+                    # agx: 前後, agy: 左右（機体座標）を想定してヨーで回転
+                    ax_body = float(agx) * 0.01  # cm/s^2 -> m/s^2 相当
+                    ay_body = float(agy) * 0.01
+                    try:
+                        yaw_rad = np.deg2rad(float(yaw)) if yaw is not None else 0.0
+                    except Exception:
+                        yaw_rad = 0.0
+                    c = np.cos(yaw_rad)
+                    s = np.sin(yaw_rad)
+                    ax = (c * ay_body) - (s * ax_body)  # world X（左右）
+                    ay = -((s * ay_body) + (c * ax_body))  # world Y（前後, 正方向を反転）
+
+                    if abs(ax) < ACCEL_DEADZONE and abs(ay) < ACCEL_DEADZONE:
+                        vel_xy[:] = 0.0
+                    else:
+                        vel_xy[0] += ax * dt
+                        vel_xy[1] += ay * dt
+                        vel_xy *= 0.985  # 簡易減衰でドリフト抑制
                     pos_xy += vel_xy * dt
-                    pos_xy = np.clip(pos_xy, -POS_MAX_RANGE, POS_MAX_RANGE)
+                    pos_xy[0] = np.clip(pos_xy[0], -POS_RANGE_X, POS_RANGE_X)
+                    pos_xy[1] = np.clip(pos_xy[1], -POS_RANGE_Y, POS_RANGE_Y)
                 except Exception:
                     pass
 
@@ -263,7 +284,7 @@ def main():
             temp=temp,
             flight_time=flight_time,
             pos_xy=pos_xy,
-            pos_range=POS_MAX_RANGE,
+            pos_range=(POS_RANGE_X, POS_RANGE_Y),
         )
 
         # ===== “ちょい余白”対策：ウィンドウ実サイズに黒埋めで完全一致 =====
@@ -283,6 +304,7 @@ def main():
             except Exception:
                 pass
 
+        if controller.in_flight:
             try:
                 controller.update_motion_from_keyboard()
                 controller.update_motion()
