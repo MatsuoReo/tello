@@ -5,13 +5,13 @@ import numpy as np
 import threading
 from cv2 import aruco
 
-
 from tello_controller import TelloController
 from aruco_detector import ArUcoDetector
 from ui_overlay import DroneUI
 from keyboard_state import KeyboardState
-
 from ui_components.display_manager import DisplayManager
+
+import inspect
 
 
 def safe_call(fn, default=None):
@@ -22,19 +22,20 @@ def safe_call(fn, default=None):
 
 
 def main():
-    kb = KeyboardState()
+    print("[USING CONTROLLER FILE]", inspect.getfile(TelloController))
+    print("[USING CONTROLLER SRC HEAD]", inspect.getsource(TelloController)[:200])
 
-    # 各コンポーネントを準備
+    kb = KeyboardState()
     controller = TelloController(kb)
     detector = ArUcoDetector()
     ui = DroneUI(panel_width=260, bottom_margin=60)
 
-    # ArUco用（簡易パイプラインで使い回し）
+    # ArUco params
     try:
         aruco_params = aruco.DetectorParameters()
     except AttributeError:
         aruco_params = aruco.DetectorParameters_create()
-    # 小さいマーカー向けに少し緩め＋コーナー精錬
+
     aruco_params.adaptiveThreshWinSizeMin = 3
     aruco_params.adaptiveThreshWinSizeMax = 53
     aruco_params.adaptiveThreshWinSizeStep = 4
@@ -46,37 +47,22 @@ def main():
         pass
     aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
 
-    # 先にUIを出したいので、接続は別スレッドで開始（ここで待たない）
     threading.Thread(target=controller.connect_and_start_stream, daemon=True).start()
 
-    print(
-        "Controls: "
-        "t=takeoff, g=land, "
-        "w/a/s/d=move, r/f=up/down, "
-        "e/x=yaw, z=quit"
-    )
+    print("Controls: t=takeoff, g=land, p=approach ON/OFF, z=quit")
 
-    # 高度の変化量を積分する用
     prev_height = None
     total_alt = 0.0
     aruno_id = None
     aruno_last = None
-    # 簡易位置推定（加速度積分）
-    # 画面上でやや左寄りに初期位置を置く（X<0で左）
+
     pos_xy = np.array([-1.8, 0.5], dtype=float)
     vel_xy = np.array([0.0, 0.0], dtype=float)
-    POS_RANGE_X = 17.5  # UI上の表示範囲（左右, +-m相当）: 幅35m
-    POS_RANGE_Y = 10.0  # UI上の表示範囲（上下, +-m相当）: 高さ20m
+    POS_RANGE_X = 17.5
+    POS_RANGE_Y = 10.0
     prev_time = time.perf_counter()
-    ACCEL_DEADZONE = 0.09  # m/s^2 未満は停止扱い
-    awaiting_data_reset = False
-    data_ready = True
-    data_change_count = 0
-    last_data_sig = None
-    command_sent_since_takeoff = False
-    prev_in_flight = controller.in_flight
+    ACCEL_DEADZONE = 0.09
 
-    # ===== 表示管理（ウィンドウ実サイズ追従 + 余白黒埋め + UI幅自動）=====
     dm = DisplayManager(
         window_name="Tello UI",
         init_w=1600,
@@ -87,114 +73,78 @@ def main():
         ui_max=700,
     )
 
-    # Tello未接続でも表示できるダミーフレーム
     blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
     frame_count = 0
-    using_webcam = False
 
     while True:
+        marker_info = None
+
         frame_count += 1
         now = time.perf_counter()
         dt = max(1e-3, now - prev_time)
         prev_time = now
-        if controller.in_flight and not prev_in_flight:
-            awaiting_data_reset = True
-            data_ready = False
-            data_change_count = 0
-            last_data_sig = None
-            command_sent_since_takeoff = False
 
-        # ===== 実ウィンドウサイズに追従 =====
         DISPLAY_W, DISPLAY_H, UI_W = dm.update()
 
-        # 未接続時のブランクも「左映像分」サイズに寄せる
         left_w = max(1, DISPLAY_W - UI_W)
         if blank_frame.shape[0] != DISPLAY_H or blank_frame.shape[1] != left_w:
             blank_frame = np.zeros((DISPLAY_H, left_w, 3), dtype=np.uint8)
 
-        # ===== 接続できているかの簡易判定 =====
         connected = getattr(controller, "frame_read", None) is not None
-        using_webcam = False
 
-        # ===== Tello からフレーム取得 =====
         frame = None
         if connected:
             frame = safe_call(controller.get_frame, None)
-
-        # ===== Tello未接続時はブランク表示のみ =====
         if frame is None or frame.size == 0:
-            using_webcam = False
             frame = blank_frame.copy()
 
-        # ===== ArUco 検出 =====
-        try:
-            ids = None
-            corners = None
+        # ---- ArUco detect ----
+        ids = None
+        corners = None
+        marker_info = None
 
-            # OpenCV が扱いやすいよう連続化
+        try:
             frame = np.ascontiguousarray(frame)
 
-            def detect_simple(img):
-                """
-                tello_aruco と同等のシンプル検出（BGR → GRAY）。
-                """
-                def _run_detect(src):
-                    try:
-                        return aruco.detectMarkers(src, aruco_dict, parameters=aruco_params)
-                    except AttributeError:
-                        if hasattr(aruco, "ArucoDetector"):
-                            try:
-                                ad = aruco.ArucoDetector(aruco_dict, aruco_params)
-                                return ad.detectMarkers(src)
-                            except Exception:
-                                pass
-                        return (None, None, None)
+            def _run_detect(src):
+                try:
+                    return aruco.detectMarkers(src, aruco_dict, parameters=aruco_params)
+                except AttributeError:
+                    if hasattr(aruco, "ArucoDetector"):
+                        ad = aruco.ArucoDetector(aruco_dict, aruco_params)
+                        return ad.detectMarkers(src)
+                    return (None, None, None)
 
-                c, i, _ = _run_detect(img)
-                if i is not None and len(i) > 0:
-                    return c, i
-
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            c, i, _ = _run_detect(frame)
+            if i is None or len(i) == 0:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 c, i, _ = _run_detect(gray)
-                if i is not None and len(i) > 0:
-                    return c, i
-                return None, None
 
-            corners, ids = detect_simple(frame)
+            corners, ids = c, i
 
             if ids is not None and len(ids) > 0:
-                try:
-                    aruco.drawDetectedMarkers(frame, corners, ids)
-                except Exception:
-                    frame = np.ascontiguousarray(frame)
-                    aruco.drawDetectedMarkers(frame, corners, ids)
-                try:
-                    aruno_id = int(ids.flatten()[0])
-                    aruno_last = aruno_id
-                except Exception:
-                    aruno_id = None
+                aruco.drawDetectedMarkers(frame, corners, ids)
+                aruno_id = int(ids.flatten()[0])
+                aruno_last = aruno_id
             else:
                 aruno_id = None
 
-            # ===== セミオート接近（AruCo）=====
             marker_info = detector.get_marker_info(
-                ids,
-                corners,
-                target_id=getattr(controller, "target_aruco_id", None)
+                ids, corners, target_id=getattr(controller, "target_aruco_id", None)
             )
 
-            if frame_count % 30 == 0:
-                label = "webcam" if using_webcam else "tello"
-                print(f"[DEBUG {label}] ArUco ids: {ids.flatten().tolist() if ids is not None else None}")
-                if aruno_last is not None:
-                    print(f"[INFO] last detected id: {aruno_last}")
+            # ★目視デバッグ：マーカー中心に点＋誤差線
+            if marker_info is not None:
+                cx, cy = marker_info["center"]
+                cv2.circle(frame, (int(cx), int(cy)), 6, (0, 255, 255), -1, cv2.LINE_AA)  # 黄色点
+                midx = frame.shape[1] // 2
+                cv2.line(frame, (midx, int(cy)), (int(cx), int(cy)), (0, 255, 255), 2, cv2.LINE_AA)
+
         except Exception as e:
             if frame_count % 60 == 0:
                 print(f"[WARN] ArUco detect failed: {e}")
 
-
-        # ===== センサーデータ =====
+        # ---- telemetry ----
         yaw = pitch = roll = None
         height = None
         battery = None
@@ -235,20 +185,6 @@ def main():
             except Exception:
                 agx = agy = agz = None
 
-            if awaiting_data_reset:
-                data_sig = (agx, agy, agz, yaw, height, flight_time)
-                if last_data_sig is None:
-                    last_data_sig = data_sig
-                elif data_sig != last_data_sig:
-                    data_change_count += 1
-                    last_data_sig = data_sig
-
-                if data_change_count >= 30 and command_sent_since_takeoff:
-                    pos_xy[:] = 0.0
-                    vel_xy[:] = 0.0
-                    awaiting_data_reset = False
-                    data_ready = True
-
             try:
                 templ = float(st.get("templ", 0))
                 temph = float(st.get("temph", 0))
@@ -269,35 +205,30 @@ def main():
             except Exception:
                 speed = None
 
-            # 加速度から位置を簡易積分（XYのみ）
-            if agx is not None and agy is not None and data_ready:
+            # 加速度積分（UI用）
+            if agx is not None and agy is not None:
                 try:
-                    # agx: 前後, agy: 左右（機体座標）を想定してヨーで回転
-                    ax_body = float(agx) * 0.01  # cm/s^2 -> m/s^2 相当
+                    ax_body = float(agx) * 0.01
                     ay_body = float(agy) * 0.01
-                    try:
-                        yaw_rad = np.deg2rad(float(yaw)) if yaw is not None else 0.0
-                    except Exception:
-                        yaw_rad = 0.0
+                    yaw_rad = np.deg2rad(float(yaw)) if yaw is not None else 0.0
                     c = np.cos(yaw_rad)
                     s = np.sin(yaw_rad)
-                    ax = (c * ay_body) - (s * ax_body)  # world X（左右）
-                    ay = -((s * ay_body) + (c * ax_body))  # world Y（前後, 正方向を反転）
+                    ax = (c * ay_body) - (s * ax_body)
+                    ay = -((s * ay_body) + (c * ax_body))
 
                     if abs(ax) < ACCEL_DEADZONE and abs(ay) < ACCEL_DEADZONE:
                         vel_xy[:] = 0.0
                     else:
                         vel_xy[0] += ax * dt
                         vel_xy[1] += ay * dt
-                        vel_xy *= 0.985  # 簡易減衰でドリフト抑制
+                        vel_xy *= 0.985
                     pos_xy += vel_xy * dt
                     pos_xy[0] = np.clip(pos_xy[0], -POS_RANGE_X, POS_RANGE_X)
                     pos_xy[1] = np.clip(pos_xy[1], -POS_RANGE_Y, POS_RANGE_Y)
                 except Exception:
                     pass
 
-        # ===== UI合成（右側パネル方式にするなら compose_side を使う）=====
-        # ui_overlay がすでに ui_components/drone_ui を使っている前提なら compose_side が生えてるはず
+        # ---- UI ----
         out = ui.compose_side(
             frame,
             display_w=DISPLAY_W,
@@ -318,70 +249,43 @@ def main():
             flight_time=flight_time,
             pos_xy=pos_xy,
             pos_range=(POS_RANGE_X, POS_RANGE_Y),
+
+            # ★セミオート状態（UIに出す）
+            approach_enabled=controller.approach_enabled,
             approach_state=getattr(controller, "approach_state", None),
             approach_vx=getattr(controller, "approach_vx", None),
             approach_yaw=getattr(controller, "approach_yaw", None),
+            approach_err_x=getattr(controller, "approach_err_x", None),
+            approach_size_px=getattr(controller, "approach_size_px", None),
         )
 
-        # ===== “ちょい余白”対策：ウィンドウ実サイズに黒埋めで完全一致 =====
         out = dm.fit(out)
-
         cv2.imshow(dm.window_name, out)
 
-        # ===== キー入力処理 =====
         key = cv2.waitKey(1) & 0xFF
         if key == ord("z"):
             break
 
-        # 1) 単発キー（takeoff/land/autoなど）
         if connected:
-            try:
-                should_quit = controller.handle_key(key)
-                if should_quit:
-                    break
-            except Exception as e:
-                print(f"[WARN] handle_key failed: {e}")
+            should_quit = controller.handle_key(key)
+            if should_quit:
+                break
 
-        # 2) 飛行中だけRC制御を継続送信
+        # ---- RC control ----
         if controller.in_flight:
-            try:
-                # 手動入力をまず反映
-                controller.update_motion_from_keyboard()
+            # 1) 手動入力反映
+            controller.update_motion_from_keyboard()
 
-                # 手動入力が無い時だけオート接近を上書き
-                is_manual = False
-                if hasattr(controller, "manual_active"):
-                    is_manual = controller.manual_active()  # あなたが用意してる前提
+            # 2) セミオートがONなら上書き（manual_active() 内で手動なら無効化）
+            if getattr(controller, "approach_enabled", False):
+                controller.update_approach_from_aruco(marker_info, frame.shape)
 
-                if (not is_manual) and getattr(controller, "approach_enabled", False):
-                    # marker_info が無い時のために安全に
-                    mi = locals().get("marker_info", None)
-                    controller.update_approach_from_aruco(mi, frame.shape)
+            # 3) 送信（毎フレーム）
+            controller.update_motion()
 
-                # 最後に送信（これを毎フレーム継続するのが重要）
-                if not command_sent_since_takeoff:
-                    if any(abs(v) > 0 for v in (controller.vx, controller.vy, controller.vz, controller.yaw)):
-                        command_sent_since_takeoff = True
-                controller.update_motion()
+        time.sleep(0.02)
 
-            except Exception as e:
-                print(f"[WARN] rc loop failed: {e}")
-
-                time.sleep(0.03)
-
-            try:
-                controller.cleanup()
-            except Exception:
-                pass
-
-        prev_in_flight = controller.in_flight
-
-        time.sleep(0.03)
-
-    try:
-        controller.cleanup()
-    except Exception:
-        pass
+    controller.cleanup()
     cv2.destroyAllWindows()
 
 

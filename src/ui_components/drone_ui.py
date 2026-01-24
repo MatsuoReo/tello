@@ -83,9 +83,13 @@ class DroneUI:
         flight_time=None,
         wifi=None,
         commands=None,
-        approach_state=None, 
-        approach_yaw=None, 
-        approach_vx=None
+
+        approach_enabled=False,
+        approach_state=None,
+        approach_vx=None,
+        approach_yaw=None,
+        approach_err_x=None,
+        approach_size_px=None,
     ):
         h, w, _ = canvas.shape
         s = _calc_s(w)
@@ -99,6 +103,28 @@ class DroneUI:
             int(HUD_SN_X * s),
             int(HUD_SN_Y * s),
             HUD_SN_SCALE * s * ts,
+            TEXT,
+            pad=6,
+            thickness=1,
+            outline=2,
+            alpha=HUD_SN_ALPHA,
+        )
+
+        # ★追加：APPROACH状態を “数値” で出す（ここが検証の肝）
+        a_on = "ON" if approach_enabled else "OFF"
+        st = approach_state if approach_state is not None else "--"
+        vx = "--" if approach_vx is None else str(int(approach_vx))
+        yw = "--" if approach_yaw is None else str(int(approach_yaw))
+        ex = "--" if approach_err_x is None else f"{float(approach_err_x):+.0f}px"
+        sz = "--" if approach_size_px is None else f"{float(approach_size_px):.0f}px"
+
+        approach_text = f"APPROACH:{a_on}  state:{st}  fwd:{vx}  yaw:{yw}  err_x:{ex}  size:{sz}"
+        boxed_text(
+            canvas,
+            approach_text,
+            int(HUD_SN_X * s),
+            int((HUD_SN_Y + 28) * s),
+            HUD_SN_SCALE * s * ts * 0.92,
             TEXT,
             pad=6,
             thickness=1,
@@ -172,32 +198,6 @@ class DroneUI:
             # 縦線
             cv2.line(canvas, (cx, cy - size), (cx, cy + size), (0, 0, 0), thick + 2, cv2.LINE_AA)
             cv2.line(canvas, (cx, cy - size), (cx, cy + size), (255, 255, 120), thick, cv2.LINE_AA)
-
-        # ===== 接近UI（矢印）=====
-        if approach_state == "approaching":
-            cx = w // 2
-            cy = h // 2
-
-            # yaw が +なら右に回したい → 右矢印
-            dy = 0
-            dx = 90 if (approach_yaw is not None and approach_yaw > 0) else (-90 if (approach_yaw is not None and approach_yaw < 0) else 0)
-
-            # 前進中なら上向き矢印も足す
-            forward = (approach_vx is not None and approach_vx > 0)
-
-            # 回転矢印
-            if dx != 0:
-                p1 = (cx, cy)
-                p2 = (cx + dx, cy)
-                cv2.arrowedLine(canvas, p1, p2, (0, 255, 255), 2, tipLength=0.25)
-
-            # 前進矢印
-            if forward:
-                p1 = (cx, cy)
-                p2 = (cx, cy - 110)
-                cv2.arrowedLine(canvas, p1, p2, (0, 255, 255), 2, tipLength=0.25)
-
-            boxed_text(canvas, "APPROACHING", int(14*s), int(80*s), 0.70*s*ts, TEXT, alpha=0.18)
 
 
         return canvas
@@ -376,12 +376,10 @@ class DroneUI:
         pos_range=3.0,
         wifi=None,
         commands=None,
-        approach_state=None,
-        approach_vx=None,
-        approach_yaw=None,
         layout="side",
         ui_bg=(245, 245, 245),
         ui_width=None,
+        **kwargs
     ):
         h, w, _ = frame.shape
 
@@ -395,9 +393,6 @@ class DroneUI:
             flight_time=flight_time,
             wifi=wifi,
             commands=commands,
-            approach_state=approach_state,
-            approach_vx=approach_vx,
-            approach_yaw=approach_yaw,
         )
             return canvas
 
@@ -410,9 +405,13 @@ class DroneUI:
             flight_time=flight_time,
             wifi=wifi,
             commands=commands,
-            approach_state=None,
-            approach_vx=None,
-            approach_yaw=None,
+
+            approach_enabled=kwargs.get("approach_enabled", False),
+            approach_state=kwargs.get("approach_state"),
+            approach_vx=kwargs.get("approach_vx"),
+            approach_yaw=kwargs.get("approach_yaw"),
+            approach_err_x=kwargs.get("approach_err_x"),
+            approach_size_px=kwargs.get("approach_size_px"),
         )
 
         ui_w = w if ui_width is None else int(ui_width)
